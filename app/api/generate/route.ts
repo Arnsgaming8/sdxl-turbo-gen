@@ -1,4 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { pipeline, env } from '@xenova/transformers';
+
+// Disable local model path restrictions
+env.allowLocalModels = false;
+env.useBrowserCache = true;
+
+// Global model cache
+let generator: any = null;
+
+async function getGenerator() {
+  if (!generator) {
+    console.log('Loading SDXL Turbo model...');
+    generator = await pipeline('text-to-image' as any, 'Xenova/sdxl-turbo', {
+      quantized: true,
+      revision: 'main',
+    });
+    console.log('Model loaded!');
+  }
+  return generator;
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -13,47 +33,22 @@ export async function POST(request: NextRequest) {
 
     console.log('Generating for prompt:', prompt);
 
-    const apiKey = process.env.HF_API_KEY;
-    if (!apiKey) {
-      return NextResponse.json(
-        { error: 'HF_API_KEY not configured' },
-        { status: 500 }
-      );
-    }
-
-    // Add anti-text suffix to prevent gibberish text/watermarks
+    // Add anti-text suffix
     const antiTextSuffix = ', no text, no words, no letters, no watermark, no signature, clean image';
     const enhancedPrompt = prompt + antiTextSuffix;
 
-    // Use Hugging Face Inference API with SDXL
-    const response = await fetch(
-      'https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0',
-      {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          inputs: enhancedPrompt,
-          parameters: {
-            width: 1024,
-            height: 768,
-            num_inference_steps: 30,
-            guidance_scale: 7.5,
-          }
-        }),
-      }
-    );
+    // Load and run model
+    const pipe = await getGenerator();
+    const result = await pipe(enhancedPrompt, {
+      num_inference_steps: 4,
+      guidance_scale: 0.0,
+      width: 512,
+      height: 512,
+    });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`API error: ${response.status} - ${errorText}`);
-    }
-
-    const blob = await response.blob();
-    const arrayBuffer = await blob.arrayBuffer();
-    const base64 = Buffer.from(arrayBuffer).toString('base64');
+    // Convert blob to base64
+    const buffer = Buffer.from(await result.blob.arrayBuffer());
+    const base64 = buffer.toString('base64');
 
     return NextResponse.json({
       image: `data:image/png;base64,${base64}`,
